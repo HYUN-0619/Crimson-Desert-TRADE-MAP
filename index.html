@@ -93,6 +93,8 @@ td:first-child{white-space:nowrap}
 .card{max-height:calc(100% - 16px);overflow:auto}
 .card strong{display:block;padding-right:28px;margin-bottom:2px}
 .card .sub{margin-bottom:6px}
+.card-actions{display:flex;flex-wrap:wrap;gap:5px}
+.card-actions button{padding:4px 7px}
 .card .x{position:absolute;top:6px;right:6px;width:28px;height:28px;padding:0;border:0;background:none;color:var(--ink2)}
 .help summary{font-size:13px;font-weight:500;color:var(--ink2)}
 .help{margin-bottom:10px}
@@ -518,6 +520,36 @@ function drawNames(svg) {
       const im = sv("image", {x: x - w * f / 2, y: y - h * f - 4, width: w * f, height: h * f, opacity: 1, "pointer-events": "none"}); im.setAttribute("href", src); svg.append(im); }
     if (vb.w <= 1300 && (!PLACE_KO[n] || st.item >= 0)) svg.append(name(x, y + 22, place({n}).toUpperCase(), 9, 0.8)); }
 }
+function drawNavigationLine(svg) {
+  const from = +$("rFrom").value, to = +$("rTo").value;
+  if (from < 0 || to < 0 || from === to || st.line) return;
+  const a = ST[from], b = ST[to], road = legPts(a, b);
+  const points = (road || [[px(a.x), py(a.z)], [px(b.x), py(b.z)]]).map(point => point.join(",")).join(" ");
+  const shape = {points, fill: "none", "stroke-linejoin": "round", "stroke-linecap": "round", "pointer-events": "none"};
+  if (!road) shape["stroke-dasharray"] = `${8 * K} ${5 * K}`;
+  svg.append(sv("polyline", {...shape, stroke: INK, "stroke-width": 6 * K}));
+  svg.append(sv("polyline", {...shape, id: "navigationLine", stroke: "#63d6ff", "stroke-width": 3.5 * K}));
+}
+
+function drawNavigationEndpoints(svg) {
+  for (const [id, labelText, color] of [["rFrom", "출발", "#075985"], ["rTo", "도착", "#9f1239"]]) {
+    const i = +$(id).value;
+    if (i < 0) continue;
+    const s = ST[i], cx = px(s.x), cy = py(s.z);
+    const sign = id === "rFrom" ? -1 : 1;
+    const y = cy + sign * 22 * K;
+    const marker = sv("g", {"pointer-events": "none", "data-endpoint": id});
+    marker.append(
+      sv("circle", {cx, cy, r: 10 * K, fill: "none", stroke: color, "stroke-width": 3 * K}),
+      sv("line", {x1: cx, y1: cy + sign * 9 * K, x2: cx, y2: y, stroke: color, "stroke-width": 2 * K}),
+      sv("rect", {x: cx - 17 * K, y: y - 8 * K, width: 34 * K, height: 16 * K, rx: 5 * K, fill: color, stroke: HALO, "stroke-width": K}),
+      sv("text", {x: cx, y, fill: "#fff", "font-size": 10 * K, "font-weight": 700,
+        "text-anchor": "middle", "dominant-baseline": "central"}, labelText)
+    );
+    svg.append(marker);
+  }
+}
+
 function drawMap() {
   const svg = $("map"); svg.replaceChildren();
   const it = st.item;
@@ -547,6 +579,7 @@ function drawMap() {
     svg.append(sv("polyline", {points: linePts(P), fill: "none", stroke: INK, "stroke-width": 2 * K, "stroke-dasharray": `${6 * K} ${4 * K}`, "stroke-linejoin": "round"}));
     P.forEach((s, k) => { if (k && s === P[0]) return; svg.append(text(px(s.x) - 20 * K, py(s.z) + 5 * K, String(k + 1), 14 * K, true)); }); // visit order
   }
+  drawNavigationLine(svg);
   const rank = s => it < 0 ? 0 : entry(s, "s", it) ? 2 : entry(s, "b", it) ? 1 : 0;
   ST.map((s, i) => [s, i]).filter(p => p[0].x != null).sort((a, b) => rank(a[0]) - rank(b[0])).forEach(([s, i]) => {
     const cx = px(s.x), cy = py(s.z), r = rank(s), on = i === st.sel;
@@ -565,6 +598,7 @@ function drawMap() {
     g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(i, true); } });
     svg.append(g);
   });
+  drawNavigationEndpoints(svg);
   $("calval").textContent = `원점 ${Math.round(st.ox)}, ${Math.round(st.oy)} · 배율 ${st.sc.toFixed(2)}`;
   placeCard(); drawHover();
 }
@@ -874,7 +908,7 @@ function showRoute(r) {
       h("p", {class: "sub", style: "margin-top:8px"}, "번호는 들르는 순서입니다 · 구입비 " + fmt(r.plan.cost) + " · 수익 +" + fmt(r.plan.profit))]
     : r.legs.map((c, k) => leg(r.path[k], r.path[k + 1], c, k + 1));
   $("routeDetail").replaceChildren(h("h3", {}, "화물 목록"), ...body,
-    h("button", {type: "button", onclick: () => { $("rFrom").value = last; $("rTo").value = -1; renderRoutes(); }}, label(last) + "에서 이어서 찾기"));
+    h("button", {type: "button", onclick: () => { $("rFrom").value = last; $("rTo").value = -1; routeEndpointsChanged(); }}, label(last) + "에서 이어서 찾기"));
   showTab("routeSec"); $("routeDetail").scrollIntoView({block: "nearest"});
 }
 
@@ -1012,12 +1046,46 @@ function renderAll() { renderStore(); renderItem(); renderDeals(); renderRoutes(
 const openStore = () => showTab("storeSec");
 // from the map: a card at the marker, the panel stays on its tab. from a link in the panel: the 상인 tab.
 function select(i, card) { st.sel = i; st.card = card ? i : -1; renderStore(); renderCard(); drawMap(); if (!card) openStore(); }
+function routeEndpointsChanged() {
+  st.line = null;
+  st.hover = null;
+  renderCard();
+  renderRoutes();
+}
+
+function setMapEndpoint(i, id) {
+  const other = $(id === "rFrom" ? "rTo" : "rFrom");
+  $(id).value = i;
+  if (+other.value === i) other.value = -1;
+
+  showTab("routeSec");
+  $("pane").scrollTop = 0;
+  const from = +$("rFrom").value, to = +$("rTo").value;
+  if (from >= 0 && to >= 0) {
+    st.card = -1;
+    const r = box();
+    if (r.width && r.height) {
+      const a = ST[from], b = ST[to], aspect = r.width / r.height;
+      const ax = px(a.x), ay = py(a.z), bx = px(b.x), by = py(b.z);
+      vb.w = Math.min(maxW(), Math.max(VB0.w / 16, Math.abs(ax - bx) + 110, (Math.abs(ay - by) + 110) * aspect));
+      vb.h = vb.w / aspect;
+      vb.x = (ax + bx - vb.w) / 2;
+      vb.y = (ay + by - vb.h) / 2;
+      setView();
+    }
+  }
+  routeEndpointsChanged();
+}
+
 function renderCard() {
   const i = st.card; if (!(i >= 0)) return;
   const s = ST[i], row = (key, cls, name) => s[key].length ? h("p", {class: "sub"}, h("span", {class: "tag " + cls}, name), " " + s[key].slice(0, 3).map(e => IT[e[0]][1] + " " + (currentPrice(s, key, e) != null ? fmt(currentPrice(s, key, e)) : rng(e))).join(", ") + (s[key].length > 3 ? " 외 " + (s[key].length - 3) + "개" : "")) : null;
   $("card").replaceChildren(h("button", {class: "x", type: "button", "aria-label": "카드 닫기", onclick: () => { st.card = -1; placeCard(); }}, "✕"),
     h("strong", {}, label(i)), h("p", {class: "sub"}, s.r ? regionName(s.r) + " 지역" : "지역 미확인"), row("s", "buy", "산다"), row("b", "sell", "판다"),
-    h("button", {type: "button", onclick: openStore}, "자세히"));
+    h("div", {class: "card-actions"},
+      h("button", {type: "button", "aria-pressed": +$("rFrom").value === i, onclick: () => setMapEndpoint(i, "rFrom")}, "출발지로 설정"),
+      h("button", {type: "button", "aria-pressed": +$("rTo").value === i, onclick: () => setMapEndpoint(i, "rTo")}, "도착지로 설정"),
+      h("button", {type: "button", onclick: openStore}, "자세히")));
 }
 function placeCard() { // keeps the card on its marker while the map moves; hidden while the marker is off screen
   const c = $("card"), i = st.card; if (!(i >= 0)) { c.hidden = true; return; }
@@ -1155,7 +1223,8 @@ function fillRouteEndpoints() {
   }
 }
 fillRouteEndpoints();
-["rFrom", "rTo", "rDet", "rMoney", "rCap", "rDist", "rSort", "rStops", "rReg", "rItem", "rTop", "rRound", "rWorst"].forEach(id => $(id).addEventListener("change", renderRoutes));
+["rFrom", "rTo"].forEach(id => $(id).addEventListener("change", routeEndpointsChanged));
+["rDet", "rMoney", "rCap", "rDist", "rSort", "rStops", "rReg", "rItem", "rTop", "rRound", "rWorst"].forEach(id => $(id).addEventListener("change", renderRoutes));
 renderRoyalRows();
 $("rRoad").addEventListener("change", () => { drawMap(); renderAll(); });
 [...new Set(LOC.map(i => ST[i].r).filter(Boolean))].sort().forEach(r => $("rReg").append(new Option(regionName(r) + " (" + LOC.filter(i => ST[i].r === r).length + "곳)", r)));

@@ -1,3 +1,4 @@
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>붉은사막 무역 지도</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
@@ -47,6 +48,14 @@ svg#map.is-panning,svg#map.is-panning *{cursor:grabbing!important}
 .ov.tr{top:12px;right:12px;flex-direction:column}
 .ov.tr button,#sideT{width:40px;height:40px;padding:0;flex:none}
 .ov.bl{bottom:12px;left:12px;right:12px}
+.store-search{position:relative;flex:0 1 260px;width:260px;max-width:100%;min-width:0;z-index:3}
+.store-search input{width:100%;font-size:16px}
+.store-search-results{position:absolute;top:calc(100% + 4px);left:0;right:0;max-height:min(200px,24vh);overflow:auto;overscroll-behavior:contain;background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 3px 12px rgba(0,0,0,.5)}
+.store-search-results button{display:block;width:100%;text-align:left;border:0;border-radius:0;background:transparent;overflow-wrap:anywhere}
+.store-search-results button:hover,.store-search-results button:focus-visible{background:var(--panel2)}
+.store-search-results button:focus-visible{outline-offset:-2px}
+.store-search-results p{padding:7px 10px;color:var(--ink2)}
+@media (max-width:600px){.store-search{order:1;flex-basis:100%}.ov.tl select{max-width:calc(100% - 46px)}}
 #calbar,.legend{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
 .bar{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
 select,input[type=text],input[type=number]{font:inherit;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 8px;min-width:0;box-sizing:border-box}
@@ -118,6 +127,10 @@ ul.notes li+li{margin-top:4px}
     <div class="ov tl">
       <button id="sideT" type="button" aria-label="편의창 접기·펼치기" aria-controls="tradePanel" aria-expanded="true">☰</button>
       <select id="item" aria-label="지도에 표시할 품목"></select>
+      <form id="storeSearch" class="store-search" role="search" aria-label="지도 무역소 검색">
+        <input id="storeQuery" type="text" aria-label="무역소 이름 또는 상인 번호" placeholder="무역소 이름·번호 검색" autocomplete="off" enterkeyhint="search" aria-controls="storeSearchResults">
+        <div id="storeSearchResults" class="store-search-results" hidden></div>
+      </form>
       <div class="bar" id="calbar" hidden>
         <span class="muted">지도를 끌어 상인 위치를 옮깁니다.</span>
         <button id="scm" type="button" aria-label="상인 배치 축소">간격 좁게</button>
@@ -1019,6 +1032,90 @@ function placeCard() { // keeps the card on its marker while the map moves; hidd
 }
 $("map").addEventListener("click", e => { if (e.target.tagName === "image" || e.target === $("map")) { st.card = -1; placeCard(); } }); // click on empty map closes the card
 function pickItem(it) { st.item = it; $("item").value = it; drawMap(); renderItem(); if (it >= 0) showTab("itemSec"); }
+
+function focusStoreOnMap(i) {
+  const s = ST[i], r = box();
+  if (!r.width || !r.height) return;
+  vb.w = Math.min(vb.w, Math.max(VB0.w / 16, Math.min(1000, r.width * 1.25)));
+  vb.h = vb.w * r.height / r.width;
+  vb.x = px(s.x) - vb.w / 2;
+  vb.y = py(s.z) - vb.h / 2;
+  setView();
+  select(i, true);
+  placeCard();
+}
+
+function setupStoreSearch() {
+  const form = $("storeSearch"), input = $("storeQuery"), results = $("storeSearchResults");
+  const normalize = value => String(value ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, "");
+  let matches = [];
+
+  function hide() {
+    results.hidden = true;
+  }
+
+  function choose(i, returnFocus) {
+    input.value = place(ST[i]) || label(i);
+    if (returnFocus) input.focus({preventScroll: true});
+    else input.blur();
+    hide();
+    focusStoreOnMap(i);
+  }
+
+  function update() {
+    const query = normalize(input.value);
+    if (!query) {
+      matches = [];
+      results.replaceChildren();
+      hide();
+      return;
+    }
+
+    const number = query.match(/^(\d+)번?$/)?.[1];
+    matches = LOC.map(i => {
+      const s = ST[i];
+      const names = [place(s), st.memo[s.id], s.id].map(normalize);
+      const rank = number !== undefined ? (String(s.id) === number ? 0 : -1)
+        : names.includes(query) ? 0
+        : names.some(name => name.startsWith(query)) ? 1
+        : names.some(name => name.includes(query)) || normalize(regionName(s.r)).includes(query) ? 2 : -1;
+      return {i, rank, name: label(i)};
+    }).filter(match => match.rank >= 0).sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name, "ko", {numeric: true}));
+
+    const options = matches.slice(0, 20).map(({i, name}) =>
+      h("button", {type: "button", onclick: event => choose(i, event.detail === 0)}, name));
+    const message = matches.length > 20 ? "검색 결과 " + matches.length + "곳 중 20곳 표시"
+      : !matches.length ? "검색 결과가 없습니다." : "";
+    if (message) options.push(h("p", {role: "status"}, message));
+    results.replaceChildren(...options);
+    results.hidden = false;
+  }
+
+  input.addEventListener("input", update);
+  input.addEventListener("focus", update);
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    if (matches.length) choose(matches[0].i, !matchMedia("(pointer: coarse)").matches);
+  });
+  form.addEventListener("keydown", event => {
+    if (event.isComposing) return;
+    if (event.key === "Escape") {
+      input.focus({preventScroll: true});
+      hide();
+      event.preventDefault();
+    } else if (!results.hidden && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      const buttons = [...results.querySelectorAll("button")];
+      const position = buttons.indexOf(document.activeElement);
+      const next = event.key === "ArrowDown" ? buttons[position + 1] : buttons[position - 1] || input;
+      if (next) next.focus();
+      event.preventDefault();
+    }
+  });
+  form.addEventListener("focusout", event => { if (!form.contains(event.relatedTarget)) hide(); });
+  document.addEventListener("pointerdown", event => { if (!form.contains(event.target)) hide(); });
+}
+
+setupStoreSearch();
 
 const sel = $("item");
 sel.append(new Option("전체 보기", -1));
